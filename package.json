@@ -1,0 +1,35 @@
+{
+  "name": "trophyquest-psn-fetcher",
+  "version": "0.0.0-dev",
+  "type": "module",
+  "scripts": {
+    "build": "npm run build-fetcher && npm run build-refresher",
+    "build-fetcher": "esbuild src/fetcher.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/fetcher.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "build-refresher": "esbuild src/refresher.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/refresher.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "start-fetcher": "tsx src/fetcher.ts",
+    "start-refresher": "tsx src/refresher.ts",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.947.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "morgan": "1.12.1",
+    "pg": "^8.16.3",
+    "playwright": "^1.56.1",
+    "psn-api": "2.18.0",
+    "uuid": "^13.0.0"
+  },
+  "description": "Functions to retrieve PSN data with [`psn-api`](https://www.npmjs.com/package/psn-api)",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.15.6",
+    "esbuild": "^0.28.0",
+    "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

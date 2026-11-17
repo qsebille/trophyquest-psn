@@ -21,20 +21,22 @@ export async function fetchPlayedSuites(
 ) {
     const {getUserTitles} = await import("psn-api");
 
-    const result = []
+    const result: PsnPlayedSuite[] = [];
     let offset: number | undefined = 0;
-    let continueLoop = true;
-    while (continueLoop) {
+    while (offset !== undefined && offset !== null) {
         const options = {limit: BATCH_SIZE, offset};
         const response = await getUserTitles(auth, accountId, options);
 
-        const playedTrophyTitles: PsnPlayedSuite[] = [];
         for (const trophyTitle of response.trophyTitles) {
-            const lastPlayedAtDate = new Date(trophyTitle.lastUpdatedDateTime);
-            const shouldKeep = startTime === null || lastPlayedAtDate > startTime;
-            if (!shouldKeep) continue;
+            if (startTime !== null) {
+                const lastPlayedAt = Date.parse(trophyTitle.lastUpdatedDateTime);
+                if (Number.isNaN(lastPlayedAt)) continue;
 
-            playedTrophyTitles.push({
+                // PSN returns titles from most recently updated to oldest.
+                if (lastPlayedAt <= startTime.getTime()) return result;
+            }
+
+            result.push({
                 id: trophyTitle.npCommunicationId,
                 name: trophyTitle.trophyTitleName,
                 iconUrl: trophyTitle.trophyTitleIconUrl,
@@ -42,20 +44,10 @@ export async function fetchPlayedSuites(
                 hasTrophyGroups: trophyTitle.hasTrophyGroups,
                 npServiceName: trophyTitle.npServiceName,
                 lastPlayedAt: trophyTitle.lastUpdatedDateTime,
-            } as PsnPlayedSuite);
-
-            if (startTime !== null && lastPlayedAtDate > startTime) {
-                continueLoop = false;
-                break;
-            }
+            });
         }
-        result.push(...playedTrophyTitles);
 
-        if (!continueLoop) break;
-
-        // End of loop
         offset = response.nextOffset;
-        continueLoop = offset !== undefined && offset !== null;
     }
 
     return result;

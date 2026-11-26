@@ -4,7 +4,7 @@ import {computeTrophyQuestPlayerUuid, computeTrophyQuestSuiteUuid} from "../util
 export interface TrophyQuestPlayedSuite {
     suiteId: string
     playerId: string
-    lastPlayedAt: string
+    lastPlayedAt: string | null
 }
 
 export function buildTrophyQuestPlayedSuites(accountId: string, playedSuites: PsnPlayedSuite[]) {

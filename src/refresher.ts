@@ -1,83 +1,72 @@
 import {getMandatoryParam} from "./config/get-mandatory-param";
-import {getAuthorizationPayload} from "./psn/auth";
 import {insertFailureMetadata, insertSuccessMetadata} from "./postgres/trophyquest-metadata-insert";
-import {selectPlayers} from "./postgres/trophyquest-player-select";
-import {fetchPsnPlayer} from "./psn/player";
-import {fetchPlayedSuites} from "./psn/played-suite";
-import {fetchPlayerTrophies} from "./psn/suite-data";
-import {buildTrophyquestPlayerData, EMPTY_TROPHYQUEST_DATA, mergeTrophyQuestData} from "./trophyquest/trophyquest-data";
-import {insertTrophyQuestData} from "./postgres/trophyquest-app-insert";
+import {recordRefreshFailure, selectPlayers} from "./postgres/trophyquest-player-select";
+import {buildPostgresPool} from "./postgres/utils/pool";
+import {getAuthorizationPayload} from "./psn/auth";
+import {synchronizePlayer} from "./trophyquest/player-sync";
 
 const lambdaName = "psn-refresher";
+
+function readInteger(name: string, value: string, minimum: number) {
+    const result = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isInteger(result) || result < minimum || result > 2_147_483_647) {
+        throw new Error(`${name} must be an integer of at least ${minimum}`);
+    }
+    return result;
+}
 
 async function runRefresher(): Promise<void> {
     const startTime = Date.now();
     console.info("🟢 PSN Refresher: Start");
 
-
     try {
-        // Reading job params
-        const npsso = getMandatoryParam("NPSSO");
-        const playerLimit = Number(getMandatoryParam("PLAYER_LIMIT"));
-        console.info(`Refreshing PSN data for ${playerLimit} players`);
-
-        // Select players to refresh
-        const playersToRefresh = await selectPlayers(playerLimit);
-        console.info(`Found ${playersToRefresh.length} players to refresh`);
-
-        // Authenticate and fetch user info
-        const auth = await getAuthorizationPayload(npsso);
-        console.info(`Authenticated with PSN`);
-
-        // Refresh data for players
-        let trophyQuestData = EMPTY_TROPHYQUEST_DATA;
-        for (const playerToRefresh of playersToRefresh) {
-            const pseudo = playerToRefresh.pseudo;
-            const lastPlayedSuiteDate = playerToRefresh.lastPlayedSuite;
-            console.info(`Refreshing data for player ${pseudo} until ${lastPlayedSuiteDate}`);
-
-            const player = await fetchPsnPlayer(auth, pseudo);
-            const accountId = player.id;
-            console.info(`Fetched player data for profile ${pseudo} with id ${accountId}`);
-
-            const playedSuites = await fetchPlayedSuites(auth, accountId, lastPlayedSuiteDate);
-            console.info(`Fetched ${playedSuites.length} played suites for player ${pseudo}`);
-
-            const trophyData = await fetchPlayerTrophies(auth, accountId, playedSuites);
-            console.info(`Fetched ${trophyData.trophies.length} trophies for player ${pseudo}`)
-            console.info(`Fetched ${trophyData.earnedTrophies.length} earned trophies for player ${pseudo}`)
-            console.info(`Fetched ${trophyData.groups.length} groups of trophy for player ${pseudo}`)
-
-            // Building Trophyquest data
-            const playerData = buildTrophyquestPlayerData(accountId, [player], playedSuites, trophyData.trophies, trophyData.earnedTrophies, trophyData.groups);
-            trophyQuestData = mergeTrophyQuestData(trophyQuestData, playerData);
-            console.info(`Built TrophyQuest data for player ${pseudo}`);
+        const playerLimit = readInteger("PLAYER_LIMIT", getMandatoryParam("PLAYER_LIMIT"), 1);
+        const reconciliationInterval = readInteger("RECONCILIATION_INTERVAL_DAYS", process.env.RECONCILIATION_INTERVAL_DAYS ?? "7", 1);
+        const reconciliationLimit = readInteger("RECONCILIATION_PLAYER_LIMIT", process.env.RECONCILIATION_PLAYER_LIMIT ?? "1", 0);
+        const pool = buildPostgresPool();
+        try {
+            const players = await selectPlayers(pool, playerLimit, reconciliationInterval);
+            if (players.length > 0) {
+                const auth = await getAuthorizationPayload(getMandatoryParam("NPSSO"));
+                const failures: unknown[] = [];
+                let reconciliationBudget = reconciliationLimit;
+                for (const player of players) {
+                    const reconcile = player.reconciliationDue && reconciliationBudget > 0;
+                    if (reconcile) reconciliationBudget--;
+                    try {
+                        const deletedLinks = await synchronizePlayer(pool, auth, player.pseudo, reconcile ? "reconcile" : "incremental", player);
+                        if (deletedLinks === null) {
+                            console.info(`PSN refresh skipped for ${player.id}: player changed concurrently`);
+                        } else if (reconcile) {
+                            console.info(`PSN reconciliation succeeded for ${player.id}: ${deletedLinks} links removed`);
+                        }
+                    } catch (err) {
+                        console.error(`PSN ${reconcile ? "reconciliation" : "refresh"} failed for ${player.id}`, err);
+                        failures.push(err);
+                        try {
+                            await recordRefreshFailure(pool, player, reconcile);
+                        } catch (recordError) {
+                            console.error(`Could not record the failed attempt for ${player.id}`, recordError);
+                        }
+                    }
+                }
+                if (failures.length > 0) {
+                    throw new AggregateError(failures, `${failures.length} PSN player refreshes failed`);
+                }
+            }
+        } finally {
+            await pool.end();
         }
-        console.info(`Built ${trophyQuestData.suites.length} suites`);
-        console.info(`Built ${trophyQuestData.groups.length} groups of trophy`);
-        console.info(`Built ${trophyQuestData.trophies.length} trophies`);
-        console.info(`Built ${trophyQuestData.playedSuites.length} played suites`);
-        console.info(`Built ${trophyQuestData.earnedTrophies.length} earned trophies`);
 
-        // Inserting data into database
-        await insertTrophyQuestData(trophyQuestData)
-
-        // End of job
-        const durationMillis = Date.now() - startTime;
-        const durationSeconds = durationMillis / 1000;
-        await insertSuccessMetadata(lambdaName, durationMillis)
+        await insertSuccessMetadata(lambdaName, Date.now() - startTime);
         console.info("✅ PSN Refresher: Success");
-        console.info(`Total processing time: ${durationSeconds.toFixed(2)} s`);
     } catch (err) {
-        await insertFailureMetadata(lambdaName, String(err))
+        await insertFailureMetadata(lambdaName, String(err));
         throw err;
     }
 }
 
-export const handler = async (
-    _event: any = {},
-    _context: any = {}
-): Promise<void> => {
+export const handler = async (): Promise<void> => {
     await runRefresher();
 };
 

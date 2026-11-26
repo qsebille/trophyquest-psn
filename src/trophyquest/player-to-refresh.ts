@@ -1,4 +1,6 @@
 export interface TrophyQuestPlayerToRefresh {
+    id: string
     pseudo: string
-    lastPlayedSuite: Date
+    version: string
+    reconciliationDue: boolean
 }

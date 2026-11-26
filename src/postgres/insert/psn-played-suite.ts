@@ -16,7 +16,7 @@ export async function insertPlayedSuites(
 
     for (let i = 0; i < playedSuites.length; i += batchSize) {
         const batch = playedSuites.slice(i, i + batchSize);
-        const values: string[] = [];
+        const values: (string | null)[] = [];
         const placeholders: string = batch.map((pts, idx) => {
             const currentValues = [
                 pts.playerId,
@@ -31,7 +31,7 @@ export async function insertPlayedSuites(
             VALUES
             ${placeholders} 
             ON CONFLICT (player_id, suite_id)
-            DO UPDATE SET last_played_at=EXCLUDED.last_played_at
+            DO UPDATE SET last_played_at=GREATEST(played_suite.last_played_at, EXCLUDED.last_played_at)
         `, values);
 
         rowsInserted += insert.rowCount ?? 0;

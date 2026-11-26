@@ -48,7 +48,22 @@ CONCURRENCY=5
 | `PG_PASSWORD`  | PostgreSQL password.                                   |
 | `PG_SSL`       | Enable SSL for PostgreSQL (`true`/`false`).            |
 | `PROFILE_NAME` | PSN Online ID to be processed by the fetcher.          |
+| `PLAYER_LIMIT` | Maximum number of players refreshed per invocation.   |
+| `RECONCILIATION_INTERVAL_DAYS` | Days between complete inventories for a player (default `7`). |
+| `RECONCILIATION_PLAYER_LIMIT` | Maximum complete reconciliation attempts per invocation (default `1`, `0` disables). |
 | `CONCURRENCY`  | Number of concurrent requests allowed for the PSN API. |
+
+## Played suite reconciliation
+
+The scheduled refresher periodically compares a player's PSN trophy title list with TrophyQuest.
+It removes a player-suite link only when the suite is missing from two consistent inventories
+and the player has no earned trophies in the suite. A hidden suite can also be missing from the
+list PSN shares with the collector. If the suite becomes visible again, a later inventory can restore the link.
+An empty inventory for a player with known suites is treated as ambiguous. Failed inventory reads
+are eligible for another reconciliation after one day, and the player stays in the regular refresh rotation.
+
+Apply the web service's `009-psn-reconciliation` Liquibase changes before deploying the PSN Lambdas.
+The PSN database role needs access to the new `psn.player` columns and `DELETE` on `psn.played_suite`.
 
 ## 📦 Installation
 

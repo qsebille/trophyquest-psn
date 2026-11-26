@@ -1,26 +1,61 @@
-import {buildPostgresPool} from "./utils/pool";
+import {Pool} from "pg";
 import {TrophyQuestPlayerToRefresh} from "../trophyquest/player-to-refresh";
 
+export async function selectPlayers(pool: Pool, limit: number, reconciliationIntervalDays: number) {
+    const result = await pool.query<TrophyQuestPlayerToRefresh>(`
+        SELECT id, pseudo, version, "reconciliationDue"
+        FROM (
+            SELECT id, pseudo, xmin::text AS version, updated_at, last_reconciliation_attempt_at,
+                   (last_reconciled_at IS NULL OR last_reconciled_at <= now() - make_interval(days => $2))
+                   AND (last_reconciliation_attempt_at IS NULL
+                        OR last_reconciliation_attempt_at <= now() - interval '1 day') AS "reconciliationDue"
+            FROM psn.player
+            ORDER BY updated_at, id
+            LIMIT $1
+        ) AS refresh_batch
+        ORDER BY "reconciliationDue" DESC, last_reconciliation_attempt_at NULLS FIRST, updated_at, id
+    `, [limit, reconciliationIntervalDays]);
 
-/**
- * Selects a list of players from the database, from the most ancien update to the most recent.
- * @param limit
- */
-export async function selectPlayers(limit: number): Promise<TrophyQuestPlayerToRefresh[]> {
-    const pool = buildPostgresPool();
-    const result = await pool.query(`
-        SELECT p.pseudo,
-               p.updated_at,
-               MAX(ps.last_played_at) AS last_played_suite
+    return result.rows;
+}
+
+export async function recordRefreshFailure(pool: Pool, player: TrophyQuestPlayerToRefresh, reconcile: boolean) {
+    await pool.query(`
+        UPDATE psn.player
+        SET last_reconciliation_attempt_at = CASE WHEN $3 THEN now() ELSE last_reconciliation_attempt_at END
+        WHERE id = $1 AND xmin::text = $2
+    `, [player.id, player.version, reconcile]);
+}
+
+export async function loadPlayerSyncState(pool: Pool, playerId: string) {
+    const result = await pool.query<{version: string; cutoff: Date | null}>(`
+        SELECT p.xmin::text AS version,
+               COALESCE(p.last_synced_title_at, (
+                   SELECT MAX(last_played_at) FROM psn.played_suite WHERE player_id = p.id
+               )) AS cutoff
         FROM psn.player p
-                 JOIN psn.played_suite ps on ps.player_id = p.id
-        GROUP BY p.pseudo, p.updated_at
-        ORDER BY updated_at
-        LIMIT ${limit}
-    `);
+        WHERE p.id = $1
+    `, [playerId]);
+    return result.rows[0];
+}
 
-    return result.rows.map(row => ({
-        pseudo: row.pseudo,
-        lastPlayedSuite: row.last_played_suite
-    }));
+export interface PlayedSuiteSnapshot {
+    suiteId: string;
+    version: string;
+    lastPlayedAt: Date | null;
+    hasEarnedTrophies: boolean;
+}
+
+export async function loadPlayedSuiteSnapshot(pool: Pool, playerId: string) {
+    const result = await pool.query<PlayedSuiteSnapshot>(`
+        SELECT ps.suite_id AS "suiteId", ps.xmin::text AS version, ps.last_played_at AS "lastPlayedAt",
+               EXISTS (
+                   SELECT 1 FROM psn.trophy t
+                   JOIN psn.earned_trophy et ON et.trophy_id = t.id
+                   WHERE t.suite_id = ps.suite_id AND et.player_id = ps.player_id
+               ) AS "hasEarnedTrophies"
+        FROM psn.played_suite ps
+        WHERE ps.player_id = $1
+    `, [playerId]);
+    return result.rows;
 }

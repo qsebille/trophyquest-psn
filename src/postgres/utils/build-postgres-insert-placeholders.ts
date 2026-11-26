@@ -1,4 +1,4 @@
-export function buildPostgresInsertPlaceholders(array: string[], idx: number): string {
+export function buildPostgresInsertPlaceholders(array: readonly unknown[], idx: number): string {
     const length = array.length;
     const base = idx * length;
 
